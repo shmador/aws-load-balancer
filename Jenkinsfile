@@ -3,84 +3,44 @@ pipeline {
 
     environment {
         TARGET_GROUP_ARN = 'arn:aws:elasticloadbalancing:il-central-1:314525640319:targetgroup/tg-umat-haash/d6712b9674576b51'
-        REGION           = 'il-central-1'
-        INVENTORY_FILE   = 'inventory.ini'
+        ANSIBLE_PLAYBOOK = 'playbook.yml'
+        INVENTORY_FILE = 'inventory.ini'
+        AWS_DEFAULT_REGION = 'il-central-1'
     }
 
     stages {
-        stage('Get Instances from Target Group') {
+        stage('Fetch EC2 Instances from Target Group') {
             steps {
                 script {
-                    // Fetch the list of instance IDs currently in the target group
-                    def instancesJson = sh(
-                        script: "aws elbv2 describe-target-health --target-group-arn ${env.TARGET_GROUP_ARN} --region ${env.REGION}",
-                        returnStdout: true
-                    ).trim()
-                    def targetInstances = readJSON text: instancesJson
-                    def instanceIds     = targetInstances.TargetHealthDescriptions*.Target.Id
-
-                    // Persist for later stages
-                    writeFile file: 'instances.txt', text: instanceIds.join('\n')
+                    def targetJson = sh(script: "aws elbv2 describe-target-health --target-group-arn $TARGET_GROUP_ARN", returnStdout: true).trim()
+                    def instanceIds = new groovy.json.JsonSlurperClassic().parseText(targetJson).targetHealthDescriptions.collect { it.target.id }
                     env.INSTANCE_IDS = instanceIds.join(' ')
                 }
             }
         }
 
-        stage('Deregister Instances from Target Group') {
+        stage('Deregister, Run Ansible, and Reregister') {
             steps {
-                script {
-                    def deregisterArgs = env.INSTANCE_IDS
-                        .split(' ')
-                        .collect { "Id=${it}" }
-                        .join(' ')
-                    sh """
-                      aws elbv2 deregister-targets \
-                        --target-group-arn ${env.TARGET_GROUP_ARN} \
-                        --targets ${deregisterArgs} \
-                        --region ${env.REGION}
-                    """
-                }
-            }
-        }
+                sshagent(['aws']) {
+                    script {
+                        def failed = false
+                        try {
+                            for (id in env.INSTANCE_IDS.split()) {
+                                sh "aws elbv2 deregister-targets --target-group-arn $TARGET_GROUP_ARN --targets Id=${id}"
+                            }
 
-        stage('Run Ansible Playbook via SSM') {
-            steps {
-                script {
-                    // Build an inventory file listing instance IDs with the SSM connection
-                    def inventories = env.INSTANCE_IDS
-                        .split(' ')
-                        .collect { id -> "${id} ansible_connection=community.aws.aws_ssm" }
-                        .join('\n')
-                    writeFile file: env.INVENTORY_FILE, text: "[targets]\n" + inventories
-
-                    // Execute the playbook
-                    sh """
-                      ansible-playbook \
-                        -i ${env.INVENTORY_FILE} \
-                        playbook.yml
-                    """
-                }
-            }
-        }
-    }
-
-    post {
-        always {
-            echo "🔄 Re-registering instances back into the target group…"
-            script {
-                if (!env.INSTANCE_IDS) {
-                    echo "⚠️ No instances were recorded; skipping re-register."
-                } else {
-                    def registerArgs = env.INSTANCE_IDS
-                        .split(' ')
-                        .collect { "Id=${it}" }
-                        .join(' ')
-                    sh """
-                      aws elbv2 register-targets \
-                        --target-group-arn ${env.TARGET_GROUP_ARN} \
-                        --targets ${registerArgs} \
-                        --region ${env.REGION}
-                    """
+                            sh "ansible-playbook -i ${env.INVENTORY_FILE} ${env.ANSIBLE_PLAYBOOK}"
+                        } catch (err) {
+                            failed = true
+                        } finally {
+                            for (id in env.INSTANCE_IDS.split()) {
+                                sh "aws elbv2 register-targets --target-group-arn $TARGET_GROUP_ARN --targets Id=${id}"
+                            }
+                            if (failed) {
+                                error("Ansible or deregistration failed. Instances re-registered.")
+                            }
+                        }
+                    }
                 }
             }
         }
