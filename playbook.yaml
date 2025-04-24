@@ -1,0 +1,49 @@
+- name: Set up nginx
+  hosts: server
+  become: yes
+  tasks:
+    - name: install nginx
+      apt:
+        name: nginx
+        state: latest
+        update_cache: yes
+    - name: Add user to group root
+      user:
+        name: "{{ user }}"
+        groups: root
+        append: yes
+    - name: Remove default nginx config
+      file:
+        path: /etc/nginx/nginx.conf
+        state: absent
+    - name: Add nginx config
+      copy:
+        src: ./nginx.conf
+        dest: /etc/nginx/nginx.conf
+        owner: "{{ user }}"
+        group: root
+        mode: '0644'
+    - name: Copy html file
+      template:
+        src: ./index.html.j2
+        dest: /var/www/html/index.html
+        owner: "{{ user }}"
+        group: root
+        mode: '0644'
+    - name: Update port
+      lineinfile:
+        path: /etc/nginx/nginx.conf
+        regexp: '^\s*listen'
+        line: listen 6789;
+        backrefs: yes
+      notify:
+        - Restart nginx
+  handlers:
+    - name: Restart nginx
+      service:
+        name: nginx
+        state: restarted
+  vars:
+    user: "ubuntu"
+
+
