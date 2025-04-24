@@ -3,8 +3,8 @@ pipeline {
 
     environment {
         TARGET_GROUP_ARN = 'arn:aws:elasticloadbalancing:il-central-1:314525640319:targetgroup/tg-umat-haash/d6712b9674576b51'
-        ANSIBLE_PLAYBOOK = 'playbook.yml'
-        INVENTORY_FILE = 'inventory.ini'
+        ANSIBLE_PLAYBOOK = 'your-playbook.yml'
+        INVENTORY_FILE = 'your-inventory.ini'
         AWS_DEFAULT_REGION = 'il-central-1'
     }
 
@@ -12,9 +12,12 @@ pipeline {
         stage('Fetch EC2 Instances from Target Group') {
             steps {
                 script {
-                    def targetJson = sh(script: "aws elbv2 describe-target-health --target-group-arn $TARGET_GROUP_ARN", returnStdout: true).trim()
-                    def instanceIds = new groovy.json.JsonSlurperClassic().parseText(targetJson).targetHealthDescriptions.collect { it.target.id }
-                    env.INSTANCE_IDS = instanceIds.join(' ')
+                    def instanceIds = sh(
+                        script: """aws elbv2 describe-target-health --target-group-arn ${TARGET_GROUP_ARN} \
+                            | jq -r '.TargetHealthDescriptions[].Target.Id' | tr '\\n' ' '""",
+                        returnStdout: true
+                    ).trim()
+                    env.INSTANCE_IDS = instanceIds
                 }
             }
         }
