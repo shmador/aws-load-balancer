@@ -2,10 +2,9 @@ pipeline {
     agent any
 
     environment {
-        TARGET_GROUP_ARN = 'arn:aws:elasticloadbalancing:il-central-1:314525640319:targetgroup/tg-umat-haash/d6712b9676b51'
+        TARGET_GROUP_ARN = 'arn:aws:elasticloadbalancing:il-central-1:314525640319:targetgroup/tg-umat-haash/d6712b9674576b51'
         REGION           = 'il-central-1'
         INVENTORY_FILE   = 'inventory.ini'
-        SSH_CRED_ID      = 'aws'   // your SSH-key credential ID in Jenkins (SSH Username with private key)
     }
 
     stages {
@@ -13,7 +12,7 @@ pipeline {
             steps {
                 script {
                     def instancesJson = sh(
-                        script: "aws elbv2 describe-target-health --target-group-arn ${TARGET_GROUP_ARN} --region ${REGION}",
+                        script: "aws elbv2 describe-target-health --target-group-arn ${env.TARGET_GROUP_ARN} --region ${env.REGION}",
                         returnStdout: true
                     ).trim()
 
@@ -30,41 +29,31 @@ pipeline {
             steps {
                 script {
                     def deregisterCmds = env.INSTANCE_IDS.split(' ').collect { "Id=${it}" }.join(' ')
-                    sh "aws elbv2 deregister-targets --target-group-arn ${TARGET_GROUP_ARN} --targets ${deregisterCmds} --region ${REGION}"
+                    sh "aws elbv2 deregister-targets --target-group-arn ${env.TARGET_GROUP_ARN} --targets ${deregisterCmds} --region ${env.REGION}"
                 }
             }
         }
 
         stage('Run Ansible Playbook') {
             steps {
-                script {
-                    // 1. Resolve each instance's private IP
-                    def instanceIps = env.INSTANCE_IDS.split(' ').collect { id ->
-                        sh(
-                            script: "aws ec2 describe-instances --instance-ids ${id} --region ${REGION} " +
-                                    "--query 'Reservations[*].Instances[*].PrivateIpAddress' --output text",
-                            returnStdout: true
-                        ).trim()
+                sshagent(credentials: ['aws']) {
+                    script {
+                        def instanceIds = env.INSTANCE_IDS.split(' ')
+                        def instanceIps = instanceIds.collect { id ->
+                            sh(
+                                script: "aws ec2 describe-instances --instance-ids ${id} --region ${env.REGION} " +
+                                        "--query 'Reservations[*].Instances[*].PrivateIpAddress' --output text",
+                                returnStdout: true
+                            ).trim()
+                        }
+
+                        writeFile file: env.INVENTORY_FILE, text: "[targets]\n" + instanceIps.join("\n")
+
+                        // Optional: quick connectivity check
+                        sh "ansible -i ${env.INVENTORY_FILE} targets -m ping -u ec2-user"
+
+                        sh "ansible-playbook -i ${env.INVENTORY_FILE} playbook.yml -u ec2-user"
                     }
-
-                    // 2. Write inventory group [server] (matches your playbook's hosts)
-                    writeFile file: INVENTORY_FILE, text: "[server]\n" + instanceIps.join("\n")
-                    echo "Inventory:\n" + readFile(INVENTORY_FILE)
-                }
-
-                // 3. Inject SSH key via Credentials Binding and run playbook
-                withCredentials([sshUserPrivateKey(
-                    credentialsId: SSH_CRED_ID,
-                    keyFileVariable: 'SSH_KEY_FILE',
-                    usernameVariable: 'SSH_USER'
-                )]) {
-                    sh """
-                      ansible-playbook -i ${INVENTORY_FILE} playbook.yml \
-                        --user ${SSH_USER} \
-                        --private-key ${SSH_KEY_FILE} \
-                        --ssh-extra-args='-o StrictHostKeyChecking=no' \
-                        -vvv
-                    """
                 }
             }
         }
@@ -73,7 +62,7 @@ pipeline {
             steps {
                 script {
                     def registerCmds = env.INSTANCE_IDS.split(' ').collect { "Id=${it}" }.join(' ')
-                    sh "aws elbv2 register-targets --target-group-arn ${TARGET_GROUP_ARN} --targets ${registerCmds} --region ${REGION}"
+                    sh "aws elbv2 register-targets --target-group-arn ${env.TARGET_GROUP_ARN} --targets ${registerCmds} --region ${env.REGION}"
                 }
             }
         }
