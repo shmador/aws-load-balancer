@@ -3,8 +3,8 @@ pipeline {
 
     environment {
         TARGET_GROUP_ARN = 'arn:aws:elasticloadbalancing:il-central-1:314525640319:targetgroup/tg-umat-haash/d6712b9674576b51'
-        ANSIBLE_PLAYBOOK = 'your-playbook.yml'
-        INVENTORY_FILE = 'your-inventory.ini'
+        ANSIBLE_PLAYBOOK = 'playbook.yml'
+        INVENTORY_FILE = 'inventory.ini'
         AWS_DEFAULT_REGION = 'il-central-1'
     }
 
